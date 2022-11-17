@@ -6,6 +6,13 @@ import socket
 
 clientPort = []
 
+def log(source,destination, messagetype, messagelength):
+    dateTimeObj = datetime.now()
+    currenttimestamp = dateTimeObj.strftime("%d-%b-%Y (%H:%M:%S)")
+    logfile = open('log.txt', w)
+    logfile.write(source + " " + destination + " " + messagetype + " " + messagelength + " " + currenttimestamp)
+    logfile.close()
+
 def create_header(srcprt, destprt, seqnum, acknum, ack, syn, fin):
 
     srcPort = "{:04x}".format(srcprt)
@@ -100,6 +107,7 @@ def signal_handler(sig,frame):
 
     for port in clientPort:
         finheader = create_fin(finPort,port,0,0)
+        log(finPort,port, 'FIN', len(finheader))
         sock.sendto(finheader,('127.0.0.1',port))
         msgtype = 'FIN'
         count = 1
@@ -129,6 +137,7 @@ def accept():
             #create a synack header (no need for message) with src = 8000, dest as newPort and seqnum = seqnum +1
             synackMsg = create_synack('8000',newPort, str(int(seq) + 1))
             #send synack header to src of syn msg
+            log('8000',src, 'SYN/ACK', len(synackMsg))
             sock.sendto(synackMsg, ('127.0.0.1', src))
             #wait for response ack message
             ack, _ = sock.recvfrom(4096)
@@ -151,18 +160,21 @@ def connectionSocket(sock):
         if(src == clientport and msgtype == 'DATA'):
             header = create_datahdr(dest,src,ack,str(int(seq) + 4))
             message = create_datamessage('pong',header)
+            log(dest,src, 'DATA', len(message))
             sock.sendto(message, ('127.0.0.1', src))
-    create_ack(dest,src,seq,ack)
+    ackMsg = create_ack(dest,src,seq,ack)
+    log(dest,src, 'ACK', len(ackMsg))
+    sock.sendto(ackMsg, ('127.0.0.1',src))
     sock.close()
             
     
     
-header = create_synack(1234, 80, 24951)
-print(header)
-message = create_datamessage("ping",header)
-print(message)
-src,dest,seq,ack,msgtype,rcvwnd,data = decode_message(message)
-print(src,dest,seq,ack,msgtype,rcvwnd,data)
+##header = create_synack(1234, 80, 24951)
+##print(header)
+##message = create_datamessage("ping",header)
+##print(message)
+##src,dest,seq,ack,msgtype,rcvwnd,data = decode_message(message)
+##print(src,dest,seq,ack,msgtype,rcvwnd,data)
 
 
 
