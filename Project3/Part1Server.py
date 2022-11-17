@@ -104,17 +104,21 @@ def signal_handler(sig,frame):
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind(('', 0))
     finPort = sock.getsockname()[1]
+    sock.settimeout(5)
 
     for port in clientPort:
         finheader = create_fin(finPort,port,0,0)
         log(finPort,port, 'FIN', len(finheader))
         sock.sendto(finheader,('127.0.0.1',port))
-        msgtype = 'FIN'
+        ack, _ = sock.recvfrom(4096)
+        src,dest,seq,ack,msgtype,rcvwnd,data = decode_message(ack)
         count = 1
-        while msgtype != 'ACK' or count != 3
+        while msgtype != 'ACK' or count != 3:
+            sock.sendto(finheader,('127.0.0.1',port))
             ack, _ = sock.recvfrom(4096)
             src,dest,seq,ack,msgtype,rcvwnd,data = decode_message(ack)
             count+=1
+    sock.close()
     sys.exit(0)
 
 def accept():
