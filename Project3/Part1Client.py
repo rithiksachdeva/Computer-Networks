@@ -3,7 +3,10 @@ import binascii
 import random
 import socket
 from datetime import datetime
+import sys
 
+serverip = sys.argv[2]
+serverport = sys.argv[4]
 destinationPortforSigint = ""
 
 def log(source,destination, messagetype, messagelength):
@@ -28,6 +31,7 @@ def decode_message(message):
 
     flags = message[24:28]
     interpretableFlags = (bin(int(flags,16))[2:]).zfill(16)
+    headerLength = int(interpretableFlags[0:4],2) * 4
     if(interpretableFlags[11] == '1' and interpretableFlags[14] == '1'):
         msgType = 'SYN/ACK'
     elif(interpretableFlags[11] == '1'):
@@ -42,10 +46,20 @@ def decode_message(message):
     rcvWnd = message[28:32]
     rcvWndw = int('0x' + rcvWnd,16)
 
-    data = message[32:]
-    msgData = (binascii.unhexlify((data.encode()))).decode()
+    kind = 0
+    length = 0
+    port = 0
+    if(headerLength==20):
+        kind = int('0x' + message[32:34],16)
+        length = int('0x' + message[34:36],16)
+        port = int('0x' + message[36:40],16)
 
-    return(sourcePort,destPort,seqNumber,ackNumber,msgType,rcvWndw,msgData)
+    msgData = 0
+    if(msgType == 'DATA'):
+        data = message[32:]
+        msgData = (binascii.unhexlify((data.encode()))).decode()
+
+    return(sourcePort,destPort,seqNumber,ackNumber,msgType,rcvWndw,port,msgData)
 
 def signal_handler(sig,frame):
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -69,7 +83,7 @@ def signal_handler(sig,frame):
     sys.exit(0)
         
 
-def create_header(srcprt, destprt, seqnum, acknum, ack, syn, fin):
+def create_header(srcprt, destprt, seqnum, acknum, ack, syn, fin, optionLength=0):
 
     srcPort = "{:04x}".format(srcprt)
     destPort = "{:04x}".format(destprt)
@@ -77,7 +91,7 @@ def create_header(srcprt, destprt, seqnum, acknum, ack, syn, fin):
     headerNum = "{:08x}".format(acknum)
 
     
-    headerLength = format(0,"b").zfill(4) # 16 is 5 bits, not 4 which is making the message 129 bits instead of 128
+    headerLength = format(((16+optionLength) / 4),"b").zfill(4)
     unused = format(0,"b").zfill(4)
     CWR = str(0)
     ECE = str(0)
@@ -96,17 +110,22 @@ def create_header(srcprt, destprt, seqnum, acknum, ack, syn, fin):
     header = srcPort + destPort + sequenceNum + headerNum + flagsSection + rcvWnd
     return(header)
 
+def create_options(kind, length, data):
+    kindfield = "{:02x}".format(kind)
+    lengthfield = "{:02x}".format(length)
+    datafield = "{:04x}".format(data)
+    return kindfield+lengthfield+datafield
+
 def create_syn(src,dest):
     seq = random.randint(20000,30000)
     header = create_header(src,dest,seq,0,0,1,0)
     return(header)
-
-def create_synack(src,dest,seq):
-    ack = random.randint(40000,50000)
-    header = create_header(src,dest,seq,ack,1,1,0)
-    return(header)
     
-def create_ack(src,dest,seq,ack):
+def create_ack(src,dest,seq,ack,port=0):
+    if port != 0:
+        header = create_header(src,dest,seq,ack,1,0,0,4)
+        options = create_options(252,4, port)
+        return(header + options)
     header = create_header(src,dest,seq,ack,1,0,0)
     return(header)
 
@@ -118,36 +137,39 @@ def create_datahdr(src,dest,seq,ack):
     header = create_header(src,dest,seq,ack,0,0,0)
     return(header)
 
-def create_datamessage(data,header):
+def create_datamessage(src, dest, seqnum, acknum, data):
+    header = create_datahdr(src, dest, seqnum, acknum)
     message = header +(binascii.hexlify(data.encode())).decode()
     return(message)
 
-def connect():
+
+def connect(ip,port):
     #Create Client Socket with random port
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind(('', 0))
     clientPort = sock.getsockname()[1]
     #create syn header (no need for message with syn) with random seqnum
-    synMsg = create_syn(clientPort,8000)
+    synMsg = create_syn(clientPort,port)
     #decode the header created so we can keep the sequence number
-    synsrc,syndest,synseq,synack,synmsgtype,synrcvwnd,syndata = decode_message(synMsg)
+    synsrc,syndest,synseq,synack,synmsgtype,synrcvwnd,synport, syndata = decode_message(synMsg)
     #send syn message to port 8000, which is where server is initialized
-    log(clientPort,'8000', 'SYN', len(synMsg))
-    sock.sendto(synMsg, ('127.0.0.1',8000))
+    log(clientPort,port, 'SYN', len(synMsg))
+    sock.sendto(synMsg, (ip,port))
     #wait to receive synack message
     synackData, _ = sock.recvfrom(4096)
     #decode synack message and check that its seqnum + 1
-    src,dest,seq,ack,msgtype,rcvwnd,data = decode_message(synackData)
-    if(seq == str(int(synseq) + 1):
+    src,dest,seq,ack,msgtype,rcvwnd,port,data = decode_message(synackData)
+    if(ack == str(int(synseq) + 1)):
         sock1 = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock1.bind(('', 0))
-        newClientConnection = sock1.getsockname()[1]
+        clientNewPort = sock1.getsockname()[1]
+        
         #create ack message with new connection ports: src = new client port, dest = new server port
         #change acknum to acknum + 1
-        ackMsg = create_ack(newClientConnection,dest,seq,str(int(ack) + 1))
+        ackMsg = create_ack(clientPort,src,ack,str(int(seq) + 1),clientNewPort)
         #send ack message to the server welcome port, and then close this client port
-        log(clientPort,'8000', 'ACK', len(ackMsg))
-        sock.sendto(ackMsg,('127.0.0.1',8000))
+        log(clientPort,src, 'ACK', len(ackMsg))
+        sock.sendto(ackMsg,(ip,src))
         sock.close()
 
         #create new header for first ping message
@@ -172,13 +194,6 @@ def connect():
         sock1.sendto(ackMsg, ('127.0.0.1', src))
         sock1.close()
 
-
-##header = create_synack(1234, 80, 24951)
-##print(header)
-##message = create_datamessage("ping",header)
-##print(message)
-##src,dest,seq,ack,msgtype,rcvwnd,data = decode_message(message)
-##print(src,dest,seq,ack,msgtype,rcvwnd,data)
 
 
    

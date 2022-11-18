@@ -3,7 +3,10 @@ import threading
 import binascii
 import random
 import socket
+import sys
 
+serverip = sys.argv[2]
+serverport = sys.argv[4]
 clientPort = []
 
 def log(source,destination, messagetype, messagelength):
@@ -13,7 +16,7 @@ def log(source,destination, messagetype, messagelength):
     logfile.write(source + " " + destination + " " + messagetype + " " + messagelength + " " + currenttimestamp)
     logfile.close()
 
-def create_header(srcprt, destprt, seqnum, acknum, ack, syn, fin):
+def create_header(srcprt, destprt, seqnum, acknum, ack, syn, fin, optionLength=0):
 
     srcPort = "{:04x}".format(srcprt)
     destPort = "{:04x}".format(destprt)
@@ -21,7 +24,7 @@ def create_header(srcprt, destprt, seqnum, acknum, ack, syn, fin):
     headerNum = "{:08x}".format(acknum)
 
     
-    headerLength = format(0,"b").zfill(4) # 16 is 5 bits, not 4 which is making the message 129 bits instead of 128
+    headerLength = format(((16+optionLength) / 4),"b").zfill(4)
     unused = format(0,"b").zfill(4)
     CWR = str(0)
     ECE = str(0)
@@ -40,15 +43,17 @@ def create_header(srcprt, destprt, seqnum, acknum, ack, syn, fin):
     header = srcPort + destPort + sequenceNum + headerNum + flagsSection + rcvWnd
     return(header)
 
-def create_syn(src,dest):
-    seq = random.randint(20000,30000)
-    header = create_header(src,dest,seq,0,0,1,0)
-    return(header)
+def create_options(kind, length, data):
+    kindfield = "{:02x}".format(kind)
+    lengthfield = "{:02x}".format(length)
+    datafield = "{:04x}".format(data)
+    return kindfield+lengthfield+datafield
 
-def create_synack(src,dest,seq):
-    ack = random.randint(40000,50000)
-    header = create_header(src,dest,seq,ack,1,1,0)
-    return(header)
+def create_synack(src,dest,acknum, connectionport):
+    seqnum = random.randint(40000,50000)
+    header = create_header(src,dest,seqnum,acknum,1,1,0,4)
+    options = create_options(252,4, connectionport)
+    return(header + options)
     
 def create_ack(src,dest,seq,ack):
     header = create_header(src,dest,seq,ack,1,0,0)
@@ -62,7 +67,8 @@ def create_datahdr(src,dest,seq,ack):
     header = create_header(src,dest,seq,ack,0,0,0)
     return(header)
 
-def create_datamessage(data,header):
+def create_datamessage(src, dest, seqnum, acknum, data):
+    header = create_datahdr(src, dest, seqnum, acknum)
     message = header +(binascii.hexlify(data.encode())).decode()
     return(message)
 
@@ -81,6 +87,7 @@ def decode_message(message):
 
     flags = message[24:28]
     interpretableFlags = (bin(int(flags,16))[2:]).zfill(16)
+    headerLength = int(interpretableFlags[0:4],2) * 4
     if(interpretableFlags[11] == '1' and interpretableFlags[14] == '1'):
         msgType = 'SYN/ACK'
     elif(interpretableFlags[11] == '1'):
@@ -95,42 +102,57 @@ def decode_message(message):
     rcvWnd = message[28:32]
     rcvWndw = int('0x' + rcvWnd,16)
 
-    data = message[32:]
-    msgData = (binascii.unhexlify((data.encode()))).decode()
+    kind = 0
+    length = 0
+    port = 0
+    if(headerLength==20):
+        kind = int('0x' + message[32:34],16)
+        length = int('0x' + message[34:36],16)
+        port = int('0x' + message[36:40],16)
 
-    return(sourcePort,destPort,seqNumber,ackNumber,msgType,rcvWndw,msgData)
+    msgData = 0
+    if(msgType == 'DATA'):
+        data = message[32:]
+        msgData = (binascii.unhexlify((data.encode()))).decode()
+
+    return(sourcePort,destPort,seqNumber,ackNumber,msgType,rcvWndw,port,msgData)
 
 def signal_handler(sig,frame):
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind(('', 0))
     finPort = sock.getsockname()[1]
-    sock.settimeout(5)
+    sock.settimeout(60)
 
     for port in clientPort:
         finheader = create_fin(finPort,port,0,0)
         log(finPort,port, 'FIN', len(finheader))
-        sock.sendto(finheader,('127.0.0.1',port))
+        sock.sendto(finheader,(serverip,port))
+
+        ack = 0
         ack, _ = sock.recvfrom(4096)
-        src,dest,seq,ack,msgtype,rcvwnd,data = decode_message(ack)
+        if ack != 0:
+            src,dest,seq,ack,msgtype,rcvwnd,port,data = decode_message(ack)
         count = 1
-        while msgtype != 'ACK' or count != 3:
-            sock.sendto(finheader,('127.0.0.1',port))
+        while (msgtype != 'ACK' and src != port and dest != finPort) or count != 3:
+            sock.sendto(finheader,(serverip,port))
             ack, _ = sock.recvfrom(4096)
-            src,dest,seq,ack,msgtype,rcvwnd,data = decode_message(ack)
+            if ack != 0:
+                src,dest,seq,ack,msgtype,rcvwnd,port,data = decode_message(ack)
             count+=1
     sock.close()
     sys.exit(0)
 
-def accept():
+def accept(ip, port):
+    signal.signal(signal.SIGINT, signal_handler)
     #open welcome socket at localhost:8000
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.bind(('127.0.0.1', 8000))
+    sock.bind(ip,port)
 
     while True:
         #look for syn message
         syn, _ = sock.recvfrom(4096)
         #decode syn message
-        src,dest,seq,ack,msgtype,rcvwnd,data = decode_message(syn)
+        src,dest,seq,ack,msgtype,rcvwnd,port,data = decode_message(syn)
         if(msgtype == 'SYN'):
             #create a new server connection socket
             connectsock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -139,34 +161,37 @@ def accept():
             #get the port number of the new connection socket so it can be sent back to client
             newPort = connectsock.getsockname()[1]
             #create a synack header (no need for message) with src = 8000, dest as newPort and seqnum = seqnum +1
-            synackMsg = create_synack('8000',newPort, str(int(seq) + 1))
+            synackMsg = create_synack(port,src, str(int(seq) + 1),newPort)
             #send synack header to src of syn msg
-            log('8000',src, 'SYN/ACK', len(synackMsg))
-            sock.sendto(synackMsg, ('127.0.0.1', src))
+            log(port,src, 'SYN/ACK', len(synackMsg))
+            sock.sendto(synackMsg, (ip, src))
             #wait for response ack message
             ack, _ = sock.recvfrom(4096)
             #decode response ack message
-            src,dest,seq,ack,msgtype,rcvwnd,data = decode_message(ack)
+            src,dest,seq,ack,msgtype,rcvwnd,port,data = decode_message(ack)
+            if port != 0:
+                clientPort.append(port)
             #create a new thread with the server new connect socket and the port of the new client socket
-            thread = threading.Thread(target=connectionSocket, args=(connectsock,))
+            thread = threading.Thread(target=connectionSocket, args=(connectsock,port,))
             #start the thread
             thread.start()
             
 
-def connectionSocket(sock):
-    signal.signal(signal.SIGINT, signal_handler)
-    msgtype = 'DATA'
-    while msgtype != 'FIN':
+def connectionSocket(sock,clientPort):
+    msgtype = 0
+    connectServerPort = sock.getsockname()[1]
+    while True:
         recvmsg, _ = sock.recvfrom(4096)
-        src,dest,seq,ack,msgtype,rcvwnd,data = decode_message(recvmsg)
-        if src not in clientPort:
-            clientPort.append(src)
-        if(src == clientport and msgtype == 'DATA'):
-            header = create_datahdr(dest,src,ack,str(int(seq) + 4))
-            message = create_datamessage('pong',header)
-            log(dest,src, 'DATA', len(message))
-            sock.sendto(message, ('127.0.0.1', src))
-    ackMsg = create_ack(dest,src,seq,ack)
+        src,dest,seq,ack,msgtype,rcvwnd,port,data = decode_message(recvmsg)
+        if(msgtype == 'FIN'):
+            break
+        if(src == clientPort and dest = connectServerPort and msgtype == 'DATA'):
+            message = create_datamessage(connectServerPort, src, ack, str(int(seq) + 4), 'pong')
+            log(connectServerPort,src, 'DATA', len(message))
+            sock.sendto(message, (serverip, src))
+
+    create_ack(src,dest,seq,ack):
+    ackMsg = create_ack(dest,src,ack,seq)
     log(dest,src, 'ACK', len(ackMsg))
     sock.sendto(ackMsg, ('127.0.0.1',src))
     sock.close()
@@ -180,7 +205,7 @@ def connectionSocket(sock):
 ##src,dest,seq,ack,msgtype,rcvwnd,data = decode_message(message)
 ##print(src,dest,seq,ack,msgtype,rcvwnd,data)
 
-
+accept(serverip, serverport)
 
     
 
