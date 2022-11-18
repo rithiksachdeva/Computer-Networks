@@ -10,7 +10,6 @@ import signal
 serverip = sys.argv[2]
 serverport = sys.argv[4]
 clientPort = []
-welcomeSocket = 0
 
 def log(source,destination, messagetype, messagelength):
     dateTimeObj = datetime.now()
@@ -116,49 +115,29 @@ def decode_message(message):
     msgData = 0
     if(msgType == 'DATA'):
         data = message[32:]
-        msgData = (binascii.unhexlify((data.encode()))).decode()
+        msgData = data.decode('utf-8')
 
     return(sourcePort,destPort,seqNumber,ackNumber,msgType,rcvWndw,port,msgData)
 
-def signal_handler(sig,frame):
-    print("Received SIGINT...")
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.bind(('', 0))
-    finPort = sock.getsockname()[1]
-    sock.settimeout(60)
-
-    for port in clientPort:
-        finheader = create_fin(finPort,port,0,0)
-        log(finPort,port, 'FIN', len(finheader))
-        sock.sendto(bytes(finheader, 'utf-8'),(serverip,port))
-
-        ack = 0
-        ack, _ = sock.recvfrom(4096)
-        if ack != 0:
-            src,dest,seq,ack,msgtype,rcvwnd,port,data = decode_message(ack)
-        count = 1
-        while (msgtype != 'ACK' and src != port and dest != finPort) or count != 3:
-            sock.sendto(bytes(finheader, 'utf-8'),(serverip,port))
-            ack, _ = sock.recvfrom(4096)
-            if ack != 0:
-                src,dest,seq,ack,msgtype,rcvwnd,port,data = decode_message(ack)
-            count+=1
-    sock.close()
-    welcomeSocket.close()
-    sys.exit(0)
 
 def accept(ip, srvport):
+    global welcomeSocket
+
     signal.signal(signal.SIGINT, signal_handler)
     #open welcome socket at localhost:8000
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind((ip,int(srvport)))
-    print("Created Welcome Socket...")
+    print("Created Welcome Socket...", type(sock))
     welcomeSocket = sock
     
-    while True:
+    while welcomeSocket:
         #look for syn message
         print("Listening for SYN message...")
-        syn, _ = sock.recvfrom(4096)
+        try:
+        	syn, _ = sock.recvfrom(4096)
+        except socket.error as e:
+        	print ("Error creating socket: %s" % e) 
+        	break
         #decode syn message
         src,dest,seq,ack,msgtype,rcvwnd,port,data = decode_message(syn)
         if(msgtype == 'SYN'):
@@ -192,6 +171,8 @@ def connectionSocket(sock,clientPort):
     msgtype = 0
     connectServerPort = sock.getsockname()[1]
     while True:
+        if event.is_set():
+            break
         print("Waiting for ping...")
         recvmsg, _ = sock.recvfrom(4096)
         src,dest,seq,ack,msgtype,rcvwnd,port,data = decode_message(recvmsg)
@@ -209,7 +190,40 @@ def connectionSocket(sock,clientPort):
     sock.sendto(bytes(ackMsg, 'utf-8'), (serverip,src))
     sock.close()
 
+def signal_handler(sig,frame):
+    global welcomeSocket
+    print("Received SIGINT...")
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.bind(('', 0))
+    finPort = sock.getsockname()[1]
+    sock.settimeout(60)
+
+    for port in clientPort:
+        print("Send FIN to...", port)
+        finheader = create_fin(finPort,port,0,0)
+        log(finPort,port, 'FIN', len(finheader))
+        sock.sendto(bytes(finheader, 'utf-8'),(serverip,port))
+
+        ack = 0
+        ack, _ = sock.recvfrom(4096)
+        print("Received ACK...")
+        if ack != "":
+            src,dest,seq,ack,msgtype,rcvwnd,_,data = decode_message(ack)
+        count = 1
+        while (msgtype != 'ACK' or src != port or dest != finPort) and count != 3:
+            sock.sendto(bytes(finheader, 'utf-8'),(serverip,port))
+            ack, _ = sock.recvfrom(4096)
+            if ack != "":
+                src,dest,seq,ack,msgtype,rcvwnd,port,data = decode_message(ack)
+            count+=1
+    sock.close()
+    welcomeSocket.close()
+    # set the event
+    event.set()
+    print("Signal exit....")
+
+global event
+event = threading.Event()
 accept(serverip, serverport)
-
-    
-
+# wait for the all thread to stop
+sys.exit(0)

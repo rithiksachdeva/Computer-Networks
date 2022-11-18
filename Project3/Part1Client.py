@@ -60,7 +60,7 @@ def decode_message(message):
     msgData = 0
     if(msgType == 'DATA'):
         data = message[32:]
-        msgData = (binascii.unhexlify((data.encode()))).decode()
+        msgData = data.decode('utf-8')
 
     return(sourcePort,destPort,seqNumber,ackNumber,msgType,rcvWndw,port,msgData)
 
@@ -211,6 +211,6 @@ def connect(ip,srvport):
         ackMsg = create_ack(dest,src,ack,seq)
         log(dest,src, 'ACK', len(ackMsg))
         print("Sending ACK message...")
-        connectionSock.sendto(ackMsg, (ip, src))
+        connectionSock.sendto(bytes(ackMsg, 'utf-8'), (ip, src))
         connectionSock.close()
 connect(serverip,serverport)
