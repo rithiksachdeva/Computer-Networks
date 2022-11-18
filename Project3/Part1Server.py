@@ -10,6 +10,7 @@ import signal
 serverip = sys.argv[2]
 serverport = sys.argv[4]
 clientPort = []
+welcomeSocket = []
 
 def log(source,destination, messagetype, messagelength):
     dateTimeObj = datetime.now()
@@ -121,16 +122,14 @@ def decode_message(message):
 
 
 def accept(ip, srvport):
-    global welcomeSocket
-
     signal.signal(signal.SIGINT, signal_handler)
     #open welcome socket at localhost:8000
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind((ip,int(srvport)))
     print("Created Welcome Socket...", type(sock))
-    welcomeSocket = sock
+    welcomeSocket.append(sock)
     
-    while welcomeSocket:
+    while welcomeSocket[0] != "":
         #look for syn message
         print("Listening for SYN message...")
         try:
@@ -167,20 +166,19 @@ def accept(ip, srvport):
             #start the thread
             thread.start()
 
-def connectionSocket(sock,clientPort):
+def connectionSocket(sock,clientPort1):
     msgtype = 0
     connectServerPort = sock.getsockname()[1]
+    print("Ping/Pong begins...")
     while True:
         if event.is_set():
             break
-        print("Waiting for ping...")
         recvmsg, _ = sock.recvfrom(4096)
         src,dest,seq,ack,msgtype,rcvwnd,port,data = decode_message(recvmsg)
         if(msgtype == 'FIN'):
             break
-        if(src == clientPort and dest == connectServerPort and msgtype == 'DATA'):
+        if(src == clientPort1 and dest == connectServerPort and msgtype == 'DATA'):
             message = create_datamessage(connectServerPort, src, ack, str(int(seq) + 4), 'pong')
-            print("Sending pong...")
             log(connectServerPort,src, 'DATA', len(message))
             sock.sendto(bytes(message, 'utf-8'), (serverip, src))
     print("Received FIN message...")
@@ -188,10 +186,10 @@ def connectionSocket(sock,clientPort):
     log(dest,src, 'ACK', len(ackMsg))
     print("Sending ACK message...")
     sock.sendto(bytes(ackMsg, 'utf-8'), (serverip,src))
+    clientPort.remove(src)
     sock.close()
 
 def signal_handler(sig,frame):
-    global welcomeSocket
     print("Received SIGINT...")
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind(('', 0))
@@ -204,26 +202,32 @@ def signal_handler(sig,frame):
         log(finPort,port, 'FIN', len(finheader))
         sock.sendto(bytes(finheader, 'utf-8'),(serverip,port))
 
-        ack = 0
+
+        print("Looking for ACK...")
         ack, _ = sock.recvfrom(4096)
-        print("Received ACK...")
-        if ack != "":
-            src,dest,seq,ack,msgtype,rcvwnd,_,data = decode_message(ack)
+        src,dest,seq,ack,msgtype,rcvwnd,_,data = decode_message(ack)
+        print("Received "  + msgtype + "...")
+        print(src, port, dest, finPort)
         count = 1
         while (msgtype != 'ACK' or src != port or dest != finPort) and count != 3:
+            print("Resending FIN...")
+            log(finPort,port, 'FIN', len(finheader))
             sock.sendto(bytes(finheader, 'utf-8'),(serverip,port))
             ack, _ = sock.recvfrom(4096)
-            if ack != "":
-                src,dest,seq,ack,msgtype,rcvwnd,port,data = decode_message(ack)
+            src,dest,seq,ack,msgtype,rcvwnd,port,data = decode_message(ack)
             count+=1
+    print("Closing FIN socket...")
     sock.close()
-    welcomeSocket.close()
+    print("Closing Welcome socket...")
+    welcomeSocket[0].close()
     # set the event
+    print("Setting event?")
     event.set()
     print("Signal exit....")
 
 global event
 event = threading.Event()
 accept(serverip, serverport)
+print("Exiting...")
 # wait for the all thread to stop
 sys.exit(0)
