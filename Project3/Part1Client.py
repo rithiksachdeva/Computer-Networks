@@ -4,6 +4,7 @@ import random
 import socket
 from datetime import datetime
 import sys
+import signal
 
 serverip = sys.argv[2]
 serverport = sys.argv[4]
@@ -14,22 +15,22 @@ clientConnectionSock = 0
 def log(source,destination, messagetype, messagelength):
     dateTimeObj = datetime.now()
     currenttimestamp = dateTimeObj.strftime("%d-%b-%Y (%H:%M:%S)")
-    logfile = open('log.txt', w)
-    logfile.write(source + " " + destination + " " + messagetype + " " + messagelength + " " + currenttimestamp)
+    logfile = open('log.txt', 'a')
+    logfile.write(str(source) + " " + str(destination) + " " + str(messagetype) + " " + str(messagelength) + " " + currenttimestamp + "\n")
     logfile.close()
 
 def decode_message(message):
     src = message[0:4]
-    sourcePort = int('0x' + src,16)
+    sourcePort = int('0x' + src.decode("utf-8"),16)
 
     dest = message[4:8]
-    destPort = int('0x' + dest,16)
+    destPort = int('0x' + dest.decode("utf-8"),16)
 
     seqnum = message[8:16]
-    seqNumber = int('0x' + seqnum,16)
+    seqNumber = int('0x' + seqnum.decode("utf-8"),16)
 
     acknum = message[16:24]
-    ackNumber = int('0x' + acknum,16)
+    ackNumber = int('0x' + acknum.decode("utf-8"),16)
 
     flags = message[24:28]
     interpretableFlags = (bin(int(flags,16))[2:]).zfill(16)
@@ -46,15 +47,15 @@ def decode_message(message):
         msgType = 'DATA'
 
     rcvWnd = message[28:32]
-    rcvWndw = int('0x' + rcvWnd,16)
+    rcvWndw = int('0x' + rcvWnd.decode("utf-8"),16)
 
     kind = 0
     length = 0
     port = 0
     if(headerLength==20):
-        kind = int('0x' + message[32:34],16)
-        length = int('0x' + message[34:36],16)
-        port = int('0x' + message[36:40],16)
+        kind = int('0x' + message[32:34].decode("utf-8"),16)
+        length = int('0x' + message[34:36].decode("utf-8"),16)
+        port = int('0x' + message[36:40].decode("utf-8"),16)
 
     msgData = 0
     if(msgType == 'DATA'):
@@ -66,13 +67,13 @@ def decode_message(message):
 
 def create_header(srcprt, destprt, seqnum, acknum, ack, syn, fin, optionLength=0):
 
-    srcPort = "{:04x}".format(srcprt)
-    destPort = "{:04x}".format(destprt)
-    sequenceNum = "{:08x}".format(seqnum)
-    headerNum = "{:08x}".format(acknum)
+    srcPort = "{:04x}".format(int(srcprt))
+    destPort = "{:04x}".format(int(destprt))
+    sequenceNum = "{:08x}".format(int(seqnum))
+    headerNum = "{:08x}".format(int(acknum))
 
     
-    headerLength = format(((16+optionLength) / 4),"b").zfill(4)
+    headerLength = format((int((16+optionLength) / 4)),"b").zfill(4)
     unused = format(0,"b").zfill(4)
     CWR = str(0)
     ECE = str(0)
@@ -130,7 +131,7 @@ def signal_handler(sig,frame):
 
         finheader = create_fin(finPort,serverConnectionPort,0,0)
         log(finPort,serverConnectionPort, 'FIN', len(finheader))
-        clientConnectionSock.sendto(finheader,(serverip,serverConnectionPort))
+        clientConnectionSock.sendto(bytes(finheader, 'utf-8'),(serverip,serverConnectionPort))
 
         ack = 0
         ack, _ = clientConnectionSock.recvfrom(4096)
@@ -159,19 +160,20 @@ def connect(ip,srvport):
     clientPort = welcomeSock.getsockname()[1]
     #create syn header (no need for message with syn) with random seqnum
     synMsg = create_syn(clientPort,srvport)
+    synMsg = bytes(synMsg, 'utf-8')
     #decode the header created so we can keep the sequence number
     synsrc,syndest,synseq,synack,synmsgtype,synrcvwnd,synport, syndata = decode_message(synMsg)
     #send syn message to port 8000, which is where server is initialized
     print("Sending SYN Message...")
-    log(clientPort,port, 'SYN', len(synMsg))
-    welcomeSock.sendto(synMsg, (ip,srvport))
+    log(clientPort,srvport, 'SYN', len(synMsg))
+    welcomeSock.sendto(synMsg, (ip,int(srvport)))
     #wait to receive synack message
     print("Waiting for SYN/ACK message...")
     synackData, _ = welcomeSock.recvfrom(4096)
     #decode synack message and check that its seqnum + 1
     src,dest,seq,ack,msgtype,rcvwnd,port,data = decode_message(synackData)
     serverConnectionPort = port
-    if(ack == str(int(synseq) + 1)):
+    if(ack == int(synseq) + 1):
         print("Created Client Connection Port...")
         connectionSock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         connectionSock.bind(('', 0))
@@ -184,7 +186,7 @@ def connect(ip,srvport):
         #send ack message to the server welcome port, and then close this client port
         print("Sending ACK message...")
         log(clientPort,src, 'ACK', len(ackMsg))
-        welcomeSock.sendto(ackMsg,(ip,src))
+        welcomeSock.sendto(bytes(ackMsg, 'utf-8'),(ip,src))
         print("Closing Client Welcome Socket...")
         welcomeSock.close()
         clientWelcomeSock = 0
@@ -193,18 +195,18 @@ def connect(ip,srvport):
         print("Sending ping message...")
         message = create_datamessage(clientNewPort, port, ack, str(int(seq) + 1), 'ping')
         log(clientNewPort,port, 'DATA', len(message))
-        connectionSock.sendto(message, (ip, port))
+        connectionSock.sendto(bytes(message, 'utf-8'), (ip, port))
         while True:
             print("Waiting for pong...")
             recvmsg,_ = connectionSock.recvfrom(4096)
             src,dest,seq,ack,msgtype,rcvwnd,port,data = decode_message(recvmsg)
             if(msgtype == 'FIN'):
                 break
-            if(src == serverConnectionPort and dest = clientNewPort and msgtype == 'DATA'):
+            if(src == serverConnectionPort and dest == clientNewPort and msgtype == 'DATA'):
                 print("Sending ping message...")
-                message = create_datamessage(clientNewPort, port, ack, str(int(seq) + 4), 'ping')
+                message = create_datamessage(dest, src, ack, str(int(seq) + 4), 'ping')
                 log(dest,src, 'DATA', len(message))
-                connectionSock.sendto(message, (ip, src))
+                connectionSock.sendto(bytes(message, 'utf-8'), (ip, src))
         print("Received FIN message...")
         ackMsg = create_ack(dest,src,ack,seq)
         log(dest,src, 'ACK', len(ackMsg))
