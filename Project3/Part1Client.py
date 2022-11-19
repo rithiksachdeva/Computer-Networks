@@ -1,11 +1,13 @@
 #This file was created by Rithik Sachdeva
 import binascii
+import threading
 import random
 import socket
 from datetime import datetime
 import sys
 import signal
 
+##maxpacket = int(sys.argv[5], 10)
 serverip = sys.argv[2]
 serverport = sys.argv[4]
 serverConnectionPort = []
@@ -62,6 +64,7 @@ def decode_message(message):
         data = message[32:]
         msgData = data.decode('utf-8')
 
+    print(threading.get_native_id(), "Decoded message...", msgType, sourcePort, destPort, seqNumber, ackNumber, port, msgData)
     return(sourcePort,destPort,seqNumber,ackNumber,msgType,rcvWndw,port,msgData)
 
 
@@ -129,7 +132,7 @@ def connect(ip,srvport):
     welcomeSock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     welcomeSock.bind(('', 0))
     clientWelcomeSock.append(welcomeSock)
-    print("Created Client Welcome Socket...")
+    print(threading.get_native_id(), "Created Client Welcome Socket...")
     signal.signal(signal.SIGINT, signal_handler)
     clientPort = welcomeSock.getsockname()[1]
     #create syn header (no need for message with syn) with random seqnum
@@ -138,19 +141,19 @@ def connect(ip,srvport):
     #decode the header created so we can keep the sequence number
     synsrc,syndest,synseq,synack,synmsgtype,synrcvwnd,synport, syndata = decode_message(synMsg)
     #send syn message to port 8000, which is where server is initialized
-    print("Sending SYN Message...")
+    print(threading.get_native_id(), "Sending SYN Message...")
     log(clientPort,srvport, 'SYN', len(synMsg))
     welcomeSock.sendto(synMsg, (ip,int(srvport)))
     #wait to receive synack message
-    print("Waiting for SYN/ACK message...")
+    print(threading.get_native_id(), "Waiting for SYN/ACK message...")
     synackData, _ = welcomeSock.recvfrom(4096)
     #decode synack message and check that its seqnum + 1
     src,dest,seq,ack,msgtype,rcvwnd,port,data = decode_message(synackData)
-    print("Serverport " + str(port))
+    print(threading.get_native_id(), "Serverport " + str(port))
     serverConnectionPort.append(port)
-    print("Serverport " + str(serverConnectionPort[0]))
+    print(threading.get_native_id(), "Serverport " + str(serverConnectionPort[0]))
     if(ack == int(synseq) + 1):
-        print("Created Client Connection Port...")
+        print(threading.get_native_id(), "Created Client Connection Port...")
         connectionSock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         connectionSock.bind(('', 0))
         clientNewPort = connectionSock.getsockname()[1]
@@ -160,19 +163,23 @@ def connect(ip,srvport):
         #change acknum to acknum + 1
         ackMsg = create_ack(clientPort,src,ack,str(int(seq) + 1),clientNewPort)
         #send ack message to the server welcome port, and then close this client port
-        print("Sending ACK message...")
+        print(threading.get_native_id(), "Sending ACK message...")
         log(clientPort,src, 'ACK', len(ackMsg))
         welcomeSock.sendto(bytes(ackMsg, 'utf-8'),(ip,src))
-        print("Closing Client Welcome Socket...")
+        print(threading.get_native_id(), "Closing Client Welcome Socket...")
         welcomeSock.close()
         clientWelcomeSock[0] = 0
 
         #create new header for first ping message
-        print("Sending first ping message...")
+        print(threading.get_native_id(), "Sending first ping message...")
         message = create_datamessage(clientNewPort, port, ack, str(int(seq) + 1), 'ping')
         log(clientNewPort,port, 'DATA', len(message))
         connectionSock.sendto(bytes(message, 'utf-8'), (ip, port))
+        packet=0
         while True:
+##            packet+=1
+##            if packet >= maxpacket:
+##                break
             recvmsg,_ = connectionSock.recvfrom(4096)
             src,dest,seq,ack,msgtype,rcvwnd,port,data = decode_message(recvmsg)
             if(msgtype == 'FIN'):
@@ -181,29 +188,29 @@ def connect(ip,srvport):
                 message = create_datamessage(dest, src, ack, str(int(seq) + 4), 'ping')
                 log(dest,src, 'DATA', len(message))
                 connectionSock.sendto(bytes(message, 'utf-8'), (ip, src))
-        print("Received FIN message...")
+        print(threading.get_native_id(), "Received FIN message...")
         ackMsg = create_ack(dest,src,ack,seq)
         log(dest,src, 'ACK', len(ackMsg))
-        print("Sending ACK message...")
+        print(threading.get_native_id(), "Sending ACK message...")
         connectionSock.sendto(bytes(ackMsg, 'utf-8'), (ip, src))
         connectionSock.close()
 
 def signal_handler(sig,frame):
-    print("Received SIGINT...")
+    print(threading.get_native_id(), "Received SIGINT...")
     if(clientConnectionSock[0] != "" and serverConnectionPort[0] != ""):
         finPort = clientConnectionSock[0].getsockname()[1]
         clientConnectionSock[0].settimeout(60)
 
         finheader = create_fin(finPort,serverConnectionPort[0],0,0)
         log(finPort,serverConnectionPort[0], 'FIN', len(finheader))
-        print("Sent FIN...")
+        print(threading.get_native_id(), "Sent FIN...")
         clientConnectionSock[0].sendto(bytes(finheader, 'utf-8'),(serverip,serverConnectionPort[0]))
 
-        print("Looking for ACK...")
+        print(threading.get_native_id(), "Looking for ACK...")
         ack, _ = clientConnectionSock[0].recvfrom(4096)
         src,dest,seq,ack,msgtype,rcvwnd,port,data = decode_message(ack)
-        print("Received "  + msgtype + "...")
-        print(src, serverConnectionPort[0], dest, finPort)
+        print(threading.get_native_id(), "Received "  + msgtype + "...")
+        print(threading.get_native_id(), src, serverConnectionPort[0], dest, finPort)
         count = 1
         while (msgtype != 'ACK' and src != serverConnectionPort[0] and dest != finPort) and count != 3:
             log(finPort,serverConnectionPort[0], 'FIN', len(finheader))
